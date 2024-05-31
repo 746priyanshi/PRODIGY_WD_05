@@ -1,0 +1,101 @@
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <vector>
+#include <curl/curl.h>
+#include <gumbo.h>
+
+struct Product {
+    std::string name;
+    std::string price;
+    std::string rating;
+};
+
+static size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* s) {
+    size_t newLength = size * nmemb;
+    size_t oldLength = s->size();
+    try {
+        s->resize(oldLength + newLength);
+    } catch (std::bad_alloc& e) {
+        // Handle memory problem
+        return 0;
+    }
+    std::copy((char*)contents, (char*)contents + newLength, s->begin() + oldLength);
+    return size * nmemb;
+}
+
+std::string fetch_html(const std::string& url) {
+    CURL* curl;
+    CURLcode res;
+    std::string readBuffer;
+
+    curl = curl_easy_init();
+    if (curl) {
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+        res = curl_easy_perform(curl);
+        curl_easy_cleanup(curl);
+    }
+    return readBuffer;
+}
+
+void search_for_nodes(GumboNode* node, std::vector<Product>& products) {
+    if (node->type != GUMBO_NODE_ELEMENT) {
+        return;
+    }
+    GumboAttribute* classAttr;
+    if ((classAttr = gumbo_get_attribute(&node->v.element.attributes, "class")) && 
+        std::string(classAttr->value).find("product") != std::string::npos) {
+        
+        Product product;
+        for (int i = 0; i < node->v.element.children.length; ++i) {
+            GumboNode* child = static_cast<GumboNode*>(node->v.element.children.data[i]);
+            if (child->type == GUMBO_NODE_ELEMENT && child->v.element.tag == GUMBO_TAG_DIV) {
+                GumboAttribute* subClassAttr = gumbo_get_attribute(&child->v.element.attributes, "class");
+                if (subClassAttr) {
+                    std::string className = subClassAttr->value;
+                    if (className.find("product-name") != std::string::npos) {
+                        product.name = static_cast<GumboNode*>(child->v.element.children.data[0])->v.text.text;
+                    }
+                    if (className.find("product-price") != std::string::npos) {
+                        product.price = static_cast<GumboNode*>(child->v.element.children.data[0])->v.text.text;
+                    }
+                    if (className.find("product-rating") != std::string::npos) {
+                        product.rating = static_cast<GumboNode*>(child->v.element.children.data[0])->v.text.text;
+                    }
+                }
+            }
+        }
+        products.push_back(product);
+    }
+
+    for (int i = 0; i < node->v.element.children.length; ++i) {
+        search_for_nodes(static_cast<GumboNode*>(node->v.element.children.data[i]), products);
+    }
+}
+
+std::vector<Product> parse_html(const std::string& html) {
+    std::vector<Product> products;
+    GumboOutput* output = gumbo_parse(html.c_str());
+    search_for_nodes(output->root, products);
+    gumbo_destroy_output(&kGumboDefaultOptions, output);
+    return products;
+}
+
+void save_to_csv(const std::vector<Product>& products, const std::string& filename) {
+    std::ofstream file(filename);
+    file << "Name,Price,Rating\n";
+    for (const auto& product : products) {
+        file << "\"" << product.name << "\",\"" << product.price << "\",\"" << product.rating << "\"\n";
+    }
+    file.close();
+}
+
+int main() {
+    std::string url = "https://www.example.com/products"; // Replace with the actual URL
+    std::string html = fetch_html(url);
+    std::vector<Product> products = parse_html(html);
+    save_to_csv(products, "products.csv");
+    return 0;
+}
